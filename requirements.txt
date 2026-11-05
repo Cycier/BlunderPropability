@@ -1,0 +1,4 @@
+python-chess==1.999
+requests>=2.31,<3
+zstandard==0.25.0
+ipykernel>=6,<8
