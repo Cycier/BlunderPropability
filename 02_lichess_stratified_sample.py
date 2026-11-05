@@ -1,50 +1,71 @@
-"""Collect a random sample of Lichess games. Edit the settings, then run."""
-
-# 1. Imports and settings
+# Provides tools for reading and writing CSV files.
 import csv
+# Provides in-memory text and binary streams.
 import io
+# Provides tools for writing JSON files.
 import json
+# Provides reproducible random sampling.
 import random
+# Provides timing functions for progress reporting.
 import time
+# Provides convenient filesystem path handling.
 from pathlib import Path
 
+# Parses chess games stored in PGN format.
 import chess.pgn
+# Needed for downloading the remote Lichess archive.
 import requests
+# Decompresses the Zstandard archive.
 import zstandard
 
+# Selects the month of games to process.
 MONTH = "2026-10"
-GAMES_PER_CONTROL = 30000    # Start small. Later: 30_000.
-MAX_GAMES = 1000000           # Pilot only. Later: None to read the whole month.
+# Sets the target number of games for each time control.
+GAMES_PER_CONTROL = 30000   
+# Limits how many games the pilot run scans.
+MAX_GAMES = 120000           # Pilot only. Later: None to read the whole month.
+# Makes random sampling reproducible between runs.
 SEED = 2026
-OUTPUT_DIR = Path("data/simple_pilot")
+# Sets the folder where output files will be saved.
+OUTPUT_DIR = Path("data")
+# Uses a download unless a local archive path is provided.
 LOCAL_ARCHIVE = None         # Or Path("lichess_db_standard_rated_2026-10.pgn.zst")
 
+# Maps each accepted time control to a filename label.
 TIME_CONTROLS = {"60+0": "1m", "300+0": "5m", "600+0": "10m"}
+#Download URL for the selected month
 SOURCE_URL = f"https://database.lichess.org/standard/lichess_db_standard_rated_{MONTH}.pgn.zst"
+# Keeps extra candidates so validation can replace rejected games.
 POOL_SIZE = int(GAMES_PER_CONTROL * 1.2)  # Keep 20% extra in case some games fail checks.
 
+# Format of Lichess.pgn.zxt: one huge PGN file with all games concatenated. Each game starts with an [Event ...] line and ends with a blank line. Each game has a [TimeControl ...] header, and the clock for each move is stored in a [%clk ...] comment.
 
-# 2. Read the text one game at a time
+# 2. Read the text one game at a time, in the official archive, each game starts with an [Event ...] line.
 def read_games(lines):
-    """In the official archive, each game starts with an [Event ...] line."""
-    game_lines = []
+    game_line = []
+# yields each game as a single string
     for line in lines:
-        if line.startswith('[Event "') and game_lines:
-            yield "".join(game_lines)
-            game_lines = []
-        game_lines.append(line)
-    if game_lines:
-        yield "".join(game_lines)
+        if line.startswith('[Event "') and game_line:
+            yield "".join(game_line)
+            game_line = []
+        game_line.append(line)
+# yields last game line because there is not event line after it
+    if game_line:
+        yield "".join(game_line)
 
-
+# converts the PGN headers into a Python dictionary
 def read_headers(pgn):
-    """Turn lines such as [TimeControl "60+0"] into a Python dictionary."""
     headers = {}
+#.strip removes spaces at the start and end, .splitline splits between enters ("\n")
     for line in pgn.strip().splitlines():
+# ifnot line.strip() means that if the line is empty we stop. this seperates the headers from the game moves
         if not line.strip():
             break
+# line[1:-1] removes the first and last character of the line, which is [] 
+# .split(" ", 1) splits each header after the first word. 
         key, value = line[1:-1].split(" ", 1)
-        headers[key] = value[1:-1]  # Remove the quotation marks.
+#  stores the value in the dictionary headers without the quotation marks due to value[1:-1]
+        headers[key] = value[1:-1]  
     return headers
 
 
