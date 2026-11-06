@@ -23,11 +23,11 @@ MONTH = "2026-10"
 # Sets the target number of games for each time control.
 GAMES_PER_CONTROL = 30000   
 # Limits how many games the pilot run scans.
-MAX_GAMES = 120000           # Pilot only. Later: None to read the whole month.
+MAX_GAMES = 1000000           # 10m took 20 Minutes, limit to 1 million, we only pick 90k here anyways
 # Makes random sampling reproducible between runs.
 SEED = 2026
 # Sets the folder where output files will be saved.
-OUTPUT_DIR = Path("data")
+OUTPUT_DIR = Path("data/results")
 # Uses a download unless a local archive path is provided.
 LOCAL_ARCHIVE = None         # Or Path("lichess_db_standard_rated_2026-10.pgn.zst")
 
