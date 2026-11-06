@@ -71,21 +71,30 @@ def read_headers(pgn):
 
 # 3. Decide which games are relevant
 def usable_headers(headers):
+# only 1+0, 5+0 and 10+0
     if headers.get("TimeControl") not in TIME_CONTROLS:
         return False
+# only rated
     if not headers.get("Event", "").startswith("Rated "):
         return False
+#only standard games, no variants or FENs
     if headers.get("Variant", "Standard") != "Standard" or "FEN" in headers:
         return False
+# no identified bots
     if headers.get("WhiteTitle") == "BOT" or headers.get("BlackTitle") == "BOT":
         return False
+# only completed games
     if headers.get("Result") not in ["1-0", "0-1", "1/2-1/2"]:
         return False
+# only games from the month
     if not headers.get("UTCDate", "").startswith(MONTH.replace("-", ".")):
         return False
+# return the gameid, e.g. https://lichess.org/Ab12Cd34/ -> Ab12Cd34
     game_id = headers.get("Site", "").rstrip("/").split("/")[-1]
+# gameid needs to be 8 char and alphanumeric
     if len(game_id) != 8 or not game_id.isalnum():
         return False
+# only games with valid Elo ratings, if the header cannot be converted to int or is missing, the game is rejected
     try:
         return int(headers["WhiteElo"]) > 0 and int(headers["BlackElo"]) > 0
     except (KeyError, ValueError):
@@ -95,32 +104,40 @@ def usable_headers(headers):
 # 4. Keep a random sample while reading the archive
 def sample_games(lines):
     rng = random.Random(SEED)
+# Each time control has its own empty list for storing games
     samples = {control: [] for control in TIME_CONTROLS}
+# antoher dictionary that counts # eligable games for each time control
     eligible_seen = {control: 0 for control in TIME_CONTROLS}
+# counts total # examined
     scanned = 0
+# we intially assume the script will reach the end of the archive
     reached_end = True
+# records time in seconds so we can calc how long processing takes
     started = time.time()
 
     for pgn in read_games(lines):
         scanned += 1
         headers = read_headers(pgn)
         if usable_headers(headers):
+# increases individual counters for time controls
             control = headers["TimeControl"]
             eligible_seen[control] += 1
             pool = samples[control]
-
+# fill sample pool if it is not full yet
             if len(pool) < POOL_SIZE:
                 pool.append(pgn)
+# if full, randomly replace games
             else:
                 # For the nth eligible game, choose a number from 0 to n-1.
                 # Replace a saved game only if that number is inside the pool.
-                # This gives every eligible game the same chance of being kept.
+                # This gives every eligible game the same chance of being kept int this iteraton.
                 position = rng.randrange(eligible_seen[control])
                 if position < POOL_SIZE:
                     pool[position] = pgn
-
+# returns progress after 10k scans
         if scanned % 10_000 == 0:
             print(f"Read {scanned:,} games in {time.time() - started:.0f}s; eligible: {eligible_seen}", flush=True)
+# stops scanning if the max number of games is reached, reached_end is now false because we stopped after MAX_GAMES
         if MAX_GAMES is not None and scanned >= MAX_GAMES:
             reached_end = False
             break
