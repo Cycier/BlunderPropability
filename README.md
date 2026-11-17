@@ -37,26 +37,39 @@ files** is printed only when the whole run succeeds.
 
 ## Script layout
 
-- A. `get_board_features(board)`: 7 move counts and 40 board features.
-- B. `get_player_features(headers, player)`: 4 rating/time-control features.
-- C. `get_clock_features(...)`: collects the 7 clock functions.
-- D. `get_move_number_features(board)`: collects the move-number function.
-- E. Stockfish analysis, `check_for_mate(...)`, `move_target(...)` and
-  `get_evaluation_features(...)`: scores, mate information and labels.
+Each group is written in this order: individual functions, a list of those
+functions, then the collector. One complete group appears before the next:
 
-The clock, move-number and evaluation groups follow the same pattern as the board
-features: small functions, a list of those functions, then a collector loop.
+| Group | Function list | Collector | Values |
+|---|---|---|---:|
+| 1. Moves | `MOVE_FEATURE_FUNCTIONS` | `get_move_features(board)` | 7 |
+| 2. Board | `BOARD_FEATURE_FUNCTIONS` | `get_board_features(board)` | 40 |
+| 3. Game | `GAME_FEATURE_FUNCTIONS` | `get_game_features(headers, player)` | 4 |
+| 4. Clocks | `CLOCK_FEATURE_FUNCTIONS` | `get_clock_features(...)` | 7 |
+| 5. Move number | `MOVE_NUMBER_FEATURE_FUNCTIONS` | `get_move_number_features(board)` | 1 |
+| 6. Evaluation/results | `EVALUATION_FEATURE_FUNCTIONS` | `get_evaluation_features(values)` | 7 |
 
-- `CLOCK_FEATURE_FUNCTIONS` contains 7 functions.
-- `MOVE_NUMBER_FEATURE_FUNCTIONS` contains 1 function.
-- `EVALUATION_FEATURE_FUNCTIONS` contains 7 functions.
-
-These lists hold functions, not CSV columns or strings. The collector calls each
+The lists hold functions, not CSV columns or strings. The collector calls each
 function and uses its name (`function.__name__`) as the column name. For example,
 `time_left_seconds` is a function in the list; its returned value is saved under
-the column name `"time_left_seconds"`. Separate column lists set the CSV order.
+`"time_left_seconds"`.
 
-`get_position_row(...)` first collects the ordinary pre-move features and
+`get_all_features(headers, board, clocks, last_spent)` joins the first five
+collectors once, giving 59 ordinary pre-move features. The game group supplies
+ratings, their difference and nominal starting time. Stockfish's pre-move score
+is added afterward as the 60th predictor.
+
+Column lists are generated from the same function groups. Their order is:
+
+```python
+MOVE_COLUMNS + BOARD_COLUMNS + GAME_COLUMNS + CLOCK_COLUMNS + NUMBER_COLUMNS
+```
+
+`PREDICTOR_COLUMNS` uses that order and then adds `pre_eval_cp`. The four game
+column names come from `GAME_FEATURE_FUNCTIONS`. `CSV_COLUMNS` adds the metadata
+and six target/audit columns, keeping the existing 84-column CSV layout.
+
+`get_position_row(...)` combines those ordinary features with position
 metadata. The processing loop then follows this order:
 
 1. Search the pre-move board freely: `best_eval`.
@@ -246,15 +259,14 @@ These are the 60 candidate predictors, in CSV order.
 
 ## Verification on 17 November 2026
 
-All 16 focused tests passed. They check the 7 clock functions, 1 move-number
-function and 7 evaluation/result functions, their collectors, all 60 predictor
-names and the 84-column CSV. None and zero values are preserved. Each move still
-has two engine searches, one extraction of each cp score and one target calculation.
-The evaluation collector does not repeat any calculation.
+All 19 focused tests passed. They check that each group's definitions, function
+list and collector appear together in order; groups contain 7/40/4/7/1 features;
+and get_all_features joins them once into 59 ordinary pre-move measurements.
+The pre-move engine score remains the 60th predictor. Adding a game function to
+its list updates the game columns and collected row without a second name list.
 
-CSV output is byte-for-byte identical to the previous working linear version
-across nine ordinary, mate, bounded and missing-score scenarios. Source board
-feature bodies and clock timing are unchanged. The earlier linear version was
-also tested on 37 real Stockfish positions; this structural revision uses the
-comparison checks rather than repeating that engine run. The full 90,000-game
-run has not been started. Test files remain outside the project.
+The existing 84-column CSV is preserved. Nine finite, mate, bounded and missing
+evaluation scenarios produce CSVs identical to the previous working version.
+Clock timing, score extraction, Stockfish search count and mate labeling remain
+covered by the checks. No new engine run or full 90,000-game job was launched
+for this structural change. Test files are kept outside the project.

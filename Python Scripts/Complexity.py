@@ -62,6 +62,14 @@ MOVE_FEATURE_FUNCTIONS = [
 ]
 
 
+def get_move_features(board):
+    moves = list(board.legal_moves)
+    result = {}
+    for function in MOVE_FEATURE_FUNCTIONS:
+        result[function.__name__] = function(board, moves)
+    return result
+
+
 # 2. Board features: pieces, pawn structure, attacks and king safety
 
 # Calculate total material on the board for one color
@@ -355,19 +363,14 @@ BOARD_FEATURE_FUNCTIONS = [
     own_rooks_on_open_files_count, opponent_rooks_on_open_files_count,
 ]
 
-# A. Collect the board and move features
-
 def get_board_features(board):
-    moves = list(board.legal_moves)
     result = {}
-    for function in MOVE_FEATURE_FUNCTIONS:
-        result[function.__name__] = function(board, moves)
     for function in BOARD_FEATURE_FUNCTIONS:
         result[function.__name__] = function(board)
     return result
 
 
-# B. Player features
+# 3. Game features: ratings and time control
 
 def mover_elo(headers, player):
     value = headers.get("WhiteElo" if player == chess.WHITE else "BlackElo")
@@ -378,21 +381,30 @@ def opponent_elo(headers, player):
     return mover_elo(headers, not player)
 
 
-def initial_seconds(headers):
+def rating_difference(headers, player):
+    own = mover_elo(headers, player)
+    opponent = opponent_elo(headers, player)
+    if own is None or opponent is None:
+        return None
+    return own - opponent
+
+
+# player is unused here, but all game functions can accept the same arguments.
+def initial_seconds(headers, player=None):
     return int(headers["TimeControl"].split("+")[0])
 
 
-def get_player_features(headers, player):
-    own = mover_elo(headers, player)
-    opponent = opponent_elo(headers, player)
-    difference = None
-    if own is not None and opponent is not None:
-        difference = own - opponent
-    return {"mover_elo": own, "opponent_elo": opponent,
-            "rating_difference": difference, "initial_seconds": initial_seconds(headers)}
+GAME_FEATURE_FUNCTIONS = [mover_elo, opponent_elo, rating_difference, initial_seconds]
 
 
-# C. Clock features from earlier annotations only
+def get_game_features(headers, player):
+    result = {}
+    for function in GAME_FEATURE_FUNCTIONS:
+        result[function.__name__] = function(headers, player)
+    return result
+
+
+# 4. Clock features from earlier annotations only
 # All functions in this group accept the same arguments for the loop below.
 
 def time_left_seconds(clocks, last_spent, player, initial):
@@ -447,7 +459,7 @@ def get_clock_features(clocks, last_spent, player, initial):
     return result
 
 
-# D. Move number
+# 5. Move number
 
 def move_number(board):
     return board.fullmove_number
@@ -463,7 +475,18 @@ def get_move_number_features(board):
     return result
 
 
-# E. Stockfish analysis and the label
+# Collect the five groups. The pre-move engine score is added separately later.
+def get_all_features(headers, board, clocks, last_spent):
+    result = {}
+    result.update(get_move_features(board))
+    result.update(get_board_features(board))
+    result.update(get_game_features(headers, board.turn))
+    result.update(get_clock_features(clocks, last_spent, board.turn, result["initial_seconds"]))
+    result.update(get_move_number_features(board))
+    return result
+
+
+# 6. Stockfish analysis and the label
 
 def analyse_position(engine, board, root_moves=None):
     if not any(board.legal_moves):
@@ -603,21 +626,29 @@ def get_evaluation_features(values):
     return result
 
 
-# The function names become the CSV column names.
+# Column groups follow the same order as the feature sections above.
+MOVE_COLUMNS = []
+for function in MOVE_FEATURE_FUNCTIONS:
+    MOVE_COLUMNS.append(function.__name__)
+
 BOARD_COLUMNS = []
-for function in MOVE_FEATURE_FUNCTIONS + BOARD_FEATURE_FUNCTIONS:
+for function in BOARD_FEATURE_FUNCTIONS:
     BOARD_COLUMNS.append(function.__name__)
+
+GAME_COLUMNS = []
+for function in GAME_FEATURE_FUNCTIONS:
+    GAME_COLUMNS.append(function.__name__)
 
 CLOCK_COLUMNS = []
 for function in CLOCK_FEATURE_FUNCTIONS:
     CLOCK_COLUMNS.append(function.__name__)
 
-MOVE_NUMBER_COLUMNS = []
+NUMBER_COLUMNS = []
 for function in MOVE_NUMBER_FEATURE_FUNCTIONS:
-    MOVE_NUMBER_COLUMNS.append(function.__name__)
+    NUMBER_COLUMNS.append(function.__name__)
 
-PREDICTOR_COLUMNS = (BOARD_COLUMNS + ["mover_elo", "opponent_elo", "rating_difference", "initial_seconds"]
-                     + CLOCK_COLUMNS + MOVE_NUMBER_COLUMNS + ["pre_eval_cp"])
+PREDICTOR_COLUMNS = (MOVE_COLUMNS + BOARD_COLUMNS + GAME_COLUMNS + CLOCK_COLUMNS
+                     + NUMBER_COLUMNS + ["pre_eval_cp"])
 METADATA_COLUMNS = [
     "game_id", "ply", "fen", "white_elo", "black_elo", "player_to_move", "time_control",
     "utc_date", "utc_time", "source_pgn", "played_move", "engine_best_move",
@@ -639,10 +670,7 @@ def get_position_row(headers, board, ply, clocks, last_spent):
            "player_to_move": "white" if player == chess.WHITE else "black",
            "time_control": headers.get("TimeControl"),
            "utc_date": headers.get("UTCDate"), "utc_time": headers.get("UTCTime")}
-    row.update(get_board_features(board))
-    row.update(get_player_features(headers, player))
-    row.update(get_clock_features(clocks, last_spent, player, row["initial_seconds"]))
-    row.update(get_move_number_features(board))
+    row.update(get_all_features(headers, board, clocks, last_spent))
     return row
 
 
