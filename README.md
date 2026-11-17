@@ -39,20 +39,39 @@ files** is printed only when the whole run succeeds.
 
 - A. `get_board_features(board)`: 7 move counts and 40 board features.
 - B. `get_player_features(headers, player)`: 4 rating/time-control features.
-- C. `get_clock_features(...)`: the 7 clock features.
-- D. `get_move_number(board)`: the game stage.
-- E. `analyse_position(...)`, `pre_move_cp(...)`, `mate_info(...)` and
-  `move_target(...)`: Stockfish scores and labeling.
+- C. `get_clock_features(...)`: collects the 7 clock functions.
+- D. `get_move_number_features(board)`: collects the move-number function.
+- E. Stockfish analysis, `check_for_mate(...)`, `move_target(...)` and
+  `get_evaluation_features(...)`: scores, mate information and labels.
 
-`get_position_row(...)` first combines the ordinary pre-move features and
+The clock, move-number and evaluation groups follow the same pattern as the board
+features: small functions, a list of those functions, then a collector loop.
+
+- `CLOCK_FEATURE_FUNCTIONS` contains 7 functions.
+- `MOVE_NUMBER_FEATURE_FUNCTIONS` contains 1 function.
+- `EVALUATION_FEATURE_FUNCTIONS` contains 7 functions.
+
+These lists hold functions, not CSV columns or strings. The collector calls each
+function and uses its name (`function.__name__`) as the column name. For example,
+`time_left_seconds` is a function in the list; its returned value is saved under
+the column name `"time_left_seconds"`. Separate column lists set the CSV order.
+
+`get_position_row(...)` first collects the ordinary pre-move features and
 metadata. The processing loop then follows this order:
 
 1. Search the pre-move board freely: `best_eval`.
 2. Search the SAME board with `root_moves=[node.move]`: `played_eval`.
-3. Extract `best_cp` and `played_cp` once, from the mover's perspective.
-4. Save `best_cp` as `pre_eval_cp`, extract mate information, and pass the four
-   already extracted values/statuses to `move_target(...)`.
-5. Add metadata and results, write the row, then update the board and clocks.
+3. Extract `best_cp` and `played_cp` once, from the mover's perspective, and
+   extract both mate values/statuses with `check_for_mate(...)`.
+4. Call `move_target(...)` once with those four extracted values/statuses.
+5. Add the extracted scores/mates to that result dictionary, `evaluation_values`.
+   `get_evaluation_features(...)` reads these already calculated values into
+   the row. Its functions do not run Stockfish or recalculate the label.
+6. Add metadata, write the row, then update the board and clocks.
+
+The seven evaluation values are `pre_eval_cp`, `played_eval_cp`, `pre_mate`,
+`played_mate`, `eval_loss_cp`, `y` and `label_status`. The first is a pre-move
+predictor; the other six are target/audit values.
 
 Stockfish starts once in `run()` and is reused throughout. There are always two
 searches per played move, even when the player chose the reported best move.
@@ -227,15 +246,15 @@ These are the 60 candidate predictors, in CSV order.
 
 ## Verification on 17 November 2026
 
-All 13 focused tests passed. They check preserved board calculations, scalar
-label arguments, exactly two engine searches and one extraction of each cp
-score per move, clock timing, mate-zero direction, the complete mate-rule matrix
-for both colors, bounded/missing scores, all-game export and the 84-column CSV.
+All 16 focused tests passed. They check the 7 clock functions, 1 move-number
+function and 7 evaluation/result functions, their collectors, all 60 predictor
+names and the 84-column CSV. None and zero values are preserved. Each move still
+has two engine searches, one extraction of each cp score and one target calculation.
+The evaluation collector does not repeat any calculation.
 
-A real Stockfish test used six short games across all three controls, including
-ordinary openings, Fool's Mate for either color and a missed mate in one. All
-37 rows passed source-PGN checks for boards, ratings, prior clocks, moves, label
-arithmetic and the CSV schema. The engine identified three newly allowed mates,
-one missed forced win and two retained winning mates. These verify program
-behavior, not perfect engine accuracy. Test files remain outside the project;
-the full 90,000-game run was not launched.
+CSV output is byte-for-byte identical to the previous working linear version
+across nine ordinary, mate, bounded and missing-score scenarios. Source board
+feature bodies and clock timing are unchanged. The earlier linear version was
+also tested on 37 real Stockfish positions; this structural revision uses the
+comparison checks rather than repeating that engine run. The full 90,000-game
+run has not been started. Test files remain outside the project.

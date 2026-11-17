@@ -8,6 +8,11 @@ Settings are at the top. OUTPUT_DIR must name a NEW folder.
 Defaults: data/position_dataset, 100,000 nodes/search, 1 thread, 128 MiB, MultiPV 1.
 Output: games_1m.csv, games_5m.csv, games_10m.csv and engine_protocol.json.
 
+Clock, move-number and evaluation values each have small functions, a function
+list, and a collector loop. Lists hold functions; function names become columns.
+The evaluation collector reads already calculated values, without repeating
+Stockfish searches, score extraction or move_target.
+
 Stockfish starts once. Each move gets a free search and an actual-move-only search.
 best_cp and played_cp are extracted once; move_target uses the extracted values.
 There are 60 predictors, including pre_eval_cp, and 84 total CSV columns.

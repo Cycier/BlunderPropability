@@ -60,6 +60,8 @@ MOVE_FEATURE_FUNCTIONS = [
     legal_move_count, capture_move_count, checking_move_count, checking_capture_count,
     quiet_move_count, promotion_move_count, castling_move_count,
 ]
+
+
 # 2. Board features: pieces, pawn structure, attacks and king safety
 
 # Calculate total material on the board for one color
@@ -391,32 +393,74 @@ def get_player_features(headers, player):
 
 
 # C. Clock features from earlier annotations only
+# All functions in this group accept the same arguments for the loop below.
 
-def get_clock_features(clocks, last_spent, player, initial):
+def time_left_seconds(clocks, last_spent, player, initial):
+    return clocks[player]
+
+
+def opponent_time_left_seconds(clocks, last_spent, player, initial):
+    return clocks[not player]
+
+
+def time_left_fraction(clocks, last_spent, player, initial):
+    seconds = clocks[player]
+    if seconds is None or initial <= 0:
+        return None
+    return seconds / initial
+
+
+def clock_difference(clocks, last_spent, player, initial):
     seconds = clocks[player]
     opponent_seconds = clocks[not player]
-    fraction = None
-    difference = None
-    log_time = None
-    low_time = None
-    if seconds is not None:
-        if initial > 0:
-            fraction = seconds / initial
-        low_time = int(seconds <= 10)
-        if seconds >= 0:  # log1p is ln(1 + seconds), so zero is okay.
-            log_time = math.log1p(seconds)
-    if seconds is not None and opponent_seconds is not None:
-        difference = seconds - opponent_seconds
-    return {"time_left_seconds": seconds, "opponent_time_left_seconds": opponent_seconds,
-            "time_left_fraction": fraction, "clock_difference": difference,
-            "time_left_log1p": log_time, "low_time_10s": low_time,
-            "last_move_seconds": last_spent[player]}
+    if seconds is None or opponent_seconds is None:
+        return None
+    return seconds - opponent_seconds
+
+
+def time_left_log1p(clocks, last_spent, player, initial):
+    seconds = clocks[player]
+    if seconds is None or seconds < 0:
+        return None
+    return math.log1p(seconds)  # ln(1 + seconds), so zero is okay.
+
+
+def low_time_10s(clocks, last_spent, player, initial):
+    seconds = clocks[player]
+    return int(seconds <= 10) if seconds is not None else None
+
+
+def last_move_seconds(clocks, last_spent, player, initial):
+    return last_spent[player]
+
+
+CLOCK_FEATURE_FUNCTIONS = [
+    time_left_seconds, opponent_time_left_seconds, time_left_fraction, clock_difference,
+    time_left_log1p, low_time_10s, last_move_seconds,
+]
+
+
+def get_clock_features(clocks, last_spent, player, initial):
+    result = {}
+    for function in CLOCK_FEATURE_FUNCTIONS:
+        result[function.__name__] = function(clocks, last_spent, player, initial)
+    return result
 
 
 # D. Move number
 
-def get_move_number(board):
+def move_number(board):
     return board.fullmove_number
+
+
+MOVE_NUMBER_FEATURE_FUNCTIONS = [move_number]
+
+
+def get_move_number_features(board):
+    result = {}
+    for function in MOVE_NUMBER_FEATURE_FUNCTIONS:
+        result[function.__name__] = function(board)
+    return result
 
 
 # E. Stockfish analysis and the label
@@ -428,8 +472,7 @@ def analyse_position(engine, board, root_moves=None):
     exact = None
     total_nodes = None
     # Ask Stockfish to analyse the position.
-    with engine.analysis(board, chess.engine.Limit(nodes=ENGINE_NODES),
-                         game=object(), root_moves=root_moves) as search:
+    with engine.analysis(board, chess.engine.Limit(nodes=ENGINE_NODES), game=object(), root_moves=root_moves) as search:
         # Stockfish sends updated info until the search finishes.
         for info in search:
             # Record the total number of searched nodes.
@@ -456,68 +499,134 @@ def pre_move_cp(analysis, player):
     return analysis["score"].pov(player).score()  # None for mate scores.
 
 
-# Keep the original mate distance and say whose mate it is.
-def mate_info(analysis, player):
+# check for a forced mate and contextualize it
+def check_for_mate(analysis, player):
+    # does an analysis exist?
     if analysis is None or "score" not in analysis:
         return None, "missing_evaluation"
+    # .mate checks for a mate, stockfish would've labeled a mate
     score = analysis["score"].pov(player)
     mate = score.mate()
+    # if the score is bounded we label it as such, return the mate (which may be a mate e.g. at least as favorable as a mate in 3) or none if stockfish didnt find a mate, similar to the pre_move_cp function
     if analysis.get("lowerbound") or analysis.get("upperbound"):
         return mate, "bounded_score"
+    # if there is no mate we label it.
     if mate is None:
         return None, "finite_cp"
-    # Both winning MateGiven and losing Mate(0) have distance zero.
+    # check if we having a winning or losing mate
     if score > chess.engine.Cp(0):
         return mate, "winning_mate"
     return mate, "losing_mate"
 
-
+# inputs: best evaluation, evaluation of the played move and both their statusses (missing, bounded, finite, winning mate, losing mate)
 def move_target(best_cp, played_cp, best_status, played_status):
+    # the nominal loss in cp, the label y (yes or no>200cp loss/missed mate) and the move classification/status
     result = {"eval_loss_cp": None, "y": None, "label_status": "missing_evaluation"}
+    # check for missing results
     if best_status == "missing_evaluation" or played_status == "missing_evaluation":
         return result
+    # check for bounded results, because we dont know the exact score we cannot calculate a loss
     if best_status == "bounded_score" or played_status == "bounded_score":
         result["label_status"] = "bounded_score"
         return result
+    # check for finite cp results
     if best_status == "finite_cp" and played_status == "finite_cp":
         if best_cp is not None and played_cp is not None:
+            # define loss
             loss = best_cp - played_cp
+            # for for a loss of more than 200 cp we update our result dictionary with the nominal cp loss, label y (1 for yes, 0 for no) and the label status
             result.update(eval_loss_cp=loss, y=int(loss > BLUNDER_CP), label_status="finite_cp")
         return result
 
-    # Mate distances do not become centipawns and are not compared as losses.
+    #check for checkmates
+    #check for discrepencies between winning mate and actual played move
     if best_status == "winning_mate":
         if played_status == "winning_mate":
             result.update(y=0, label_status="winning_mate_retained")
         else:
             result.update(y=1, label_status="missed_forced_win")
+    # check for discrepencies between losing mate and actual played move
     elif best_status == "losing_mate":
         if played_status == "losing_mate":
             result.update(y=0, label_status="already_forced_loss")
+        # a losing mate is by definition losing whatever we do, so if the played move is not a losing mate we have an issue with mate evaluation
         else:
             result["label_status"] = "inconsistent_mate_evaluations"
-    elif played_status == "losing_mate":
+
+    elif best_status != "losing_mate" and played_status == "losing_mate":
         result.update(y=1, label_status="allowed_forced_loss")
+    # check for a winning mate that was played but not found by stockfish in the intial search but the subsequent one found it
     elif played_status == "winning_mate":
         result.update(y=0, label_status="winning_mate_played")
     return result
 
 
+# Choose the evaluation/result columns from the values already calculated.
+
+def pre_eval_cp(values):
+    return values["pre_eval_cp"]
+
+
+def played_eval_cp(values):
+    return values["played_eval_cp"]
+
+
+def pre_mate(values):
+    return values["pre_mate"]
+
+
+def played_mate(values):
+    return values["played_mate"]
+
+
+def eval_loss_cp(values):
+    return values["eval_loss_cp"]
+
+
+def y(values):
+    return values["y"]
+
+
+def label_status(values):
+    return values["label_status"]
+
+
+EVALUATION_FEATURE_FUNCTIONS = [
+    pre_eval_cp, played_eval_cp, pre_mate, played_mate, eval_loss_cp, y, label_status,
+]
+
+
+def get_evaluation_features(values):
+    result = {}
+    for function in EVALUATION_FEATURE_FUNCTIONS:
+        result[function.__name__] = function(values)
+    return result
+
+
+# The function names become the CSV column names.
 BOARD_COLUMNS = []
 for function in MOVE_FEATURE_FUNCTIONS + BOARD_FEATURE_FUNCTIONS:
     BOARD_COLUMNS.append(function.__name__)
 
-PREDICTOR_COLUMNS = BOARD_COLUMNS + [
-    "mover_elo", "opponent_elo", "rating_difference", "initial_seconds",
-    "time_left_seconds", "opponent_time_left_seconds", "time_left_fraction",
-    "clock_difference", "time_left_log1p", "low_time_10s", "last_move_seconds",
-    "move_number", "pre_eval_cp"]
+CLOCK_COLUMNS = []
+for function in CLOCK_FEATURE_FUNCTIONS:
+    CLOCK_COLUMNS.append(function.__name__)
+
+MOVE_NUMBER_COLUMNS = []
+for function in MOVE_NUMBER_FEATURE_FUNCTIONS:
+    MOVE_NUMBER_COLUMNS.append(function.__name__)
+
+PREDICTOR_COLUMNS = (BOARD_COLUMNS + ["mover_elo", "opponent_elo", "rating_difference", "initial_seconds"]
+                     + CLOCK_COLUMNS + MOVE_NUMBER_COLUMNS + ["pre_eval_cp"])
 METADATA_COLUMNS = [
     "game_id", "ply", "fen", "white_elo", "black_elo", "player_to_move", "time_control",
     "utc_date", "utc_time", "source_pgn", "played_move", "engine_best_move",
     "before_eval_depth", "played_eval_depth", "before_eval_nodes", "played_eval_nodes",
     "best_eval_status", "played_eval_status"]
-TARGET_COLUMNS = ["played_eval_cp", "pre_mate", "played_mate", "eval_loss_cp", "y", "label_status"]
+TARGET_COLUMNS = []
+for function in EVALUATION_FEATURE_FUNCTIONS:
+    if function.__name__ != "pre_eval_cp":  # The pre-move score is already a predictor column.
+        TARGET_COLUMNS.append(function.__name__)
 CSV_COLUMNS = METADATA_COLUMNS + PREDICTOR_COLUMNS + TARGET_COLUMNS
 
 
@@ -533,7 +642,7 @@ def get_position_row(headers, board, ply, clocks, last_spent):
     row.update(get_board_features(board))
     row.update(get_player_features(headers, player))
     row.update(get_clock_features(clocks, last_spent, player, row["initial_seconds"]))
-    row["move_number"] = get_move_number(board)
+    row.update(get_move_number_features(board))
     return row
 
 
@@ -564,14 +673,15 @@ def process_pgn(pgn_path, csv_path, engine):
                 # Extract each centipawn score once, using the same player's perspective.
                 best_cp = pre_move_cp(best_eval, player)
                 played_cp = pre_move_cp(played_eval, player)
-                best_mate, best_status = mate_info(best_eval, player)
-                played_mate, played_status = mate_info(played_eval, player)
+                best_mate, best_status = check_for_mate(best_eval, player)
+                played_mate, played_status = check_for_mate(played_eval, player)
 
-                row["pre_eval_cp"] = best_cp
-                row["played_eval_cp"] = played_cp
-                row["pre_mate"] = best_mate
-                row["played_mate"] = played_mate
-                row.update(move_target(best_cp, played_cp, best_status, played_status))
+                evaluation_values = move_target(best_cp, played_cp, best_status, played_status)
+                evaluation_values["pre_eval_cp"] = best_cp
+                evaluation_values["played_eval_cp"] = played_cp
+                evaluation_values["pre_mate"] = best_mate
+                evaluation_values["played_mate"] = played_mate
+                row.update(get_evaluation_features(evaluation_values))
 
                 row["played_move"] = node.move.uci()
                 row["engine_best_move"] = best_eval["pv"][0].uci() if best_eval is not None else None
