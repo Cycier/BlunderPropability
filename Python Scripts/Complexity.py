@@ -389,7 +389,7 @@ def rating_difference(headers, player):
     return own - opponent
 
 
-# player is unused here, but all game functions can accept the same arguments.
+# player is unused here, but all game functions accept the same arguments.
 def initial_seconds(headers, player=None):
     return int(headers["TimeControl"].split("+")[0])
 
@@ -404,8 +404,7 @@ def get_game_features(headers, player):
     return result
 
 
-# 4. Clock features from earlier annotations only
-# All functions in this group accept the same arguments for the loop below.
+# 4. Clock features: time left, last move time, and derived features
 
 def time_left_seconds(clocks, last_spent, player, initial):
     return clocks[player]
@@ -475,7 +474,7 @@ def get_move_number_features(board):
     return result
 
 
-# Collect the five groups. The pre-move engine score is added separately later.
+# Collect the five groups, stockfish values are added later in the main loop
 def get_all_features(headers, board, clocks, last_spent):
     result = {}
     result.update(get_move_features(board))
@@ -506,7 +505,7 @@ def analyse_position(engine, board, root_moves=None):
                 analysis = info.copy()
                 if not info.get("lowerbound") and not info.get("upperbound"):
                     exact = info.copy()
-    # A node limit can stop an iteration halfway. Keep the last complete score and move.
+    # A node limit can stop an iteration halfway. We keep the last complete score
     if exact is not None:
         analysis = exact
     if analysis is not None:
@@ -561,7 +560,7 @@ def move_target(best_cp, played_cp, best_status, played_status):
             result.update(eval_loss_cp=loss, y=int(loss > BLUNDER_CP), label_status="finite_cp")
         return result
 
-    #check for checkmates
+    #possible checkmate cases
     #check for discrepencies between winning mate and actual played move
     if best_status == "winning_mate":
         if played_status == "winning_mate":
@@ -581,48 +580,6 @@ def move_target(best_cp, played_cp, best_status, played_status):
     # check for a winning mate that was played but not found by stockfish in the intial search but the subsequent one found it
     elif played_status == "winning_mate":
         result.update(y=0, label_status="winning_mate_played")
-    return result
-
-
-# Choose the evaluation/result columns from the values already calculated.
-
-def pre_eval_cp(values):
-    return values["pre_eval_cp"]
-
-
-def played_eval_cp(values):
-    return values["played_eval_cp"]
-
-
-def pre_mate(values):
-    return values["pre_mate"]
-
-
-def played_mate(values):
-    return values["played_mate"]
-
-
-def eval_loss_cp(values):
-    return values["eval_loss_cp"]
-
-
-def y(values):
-    return values["y"]
-
-
-def label_status(values):
-    return values["label_status"]
-
-
-EVALUATION_FEATURE_FUNCTIONS = [
-    pre_eval_cp, played_eval_cp, pre_mate, played_mate, eval_loss_cp, y, label_status,
-]
-
-
-def get_evaluation_features(values):
-    result = {}
-    for function in EVALUATION_FEATURE_FUNCTIONS:
-        result[function.__name__] = function(values)
     return result
 
 
@@ -649,29 +606,21 @@ for function in MOVE_NUMBER_FEATURE_FUNCTIONS:
 
 PREDICTOR_COLUMNS = (MOVE_COLUMNS + BOARD_COLUMNS + GAME_COLUMNS + CLOCK_COLUMNS
                      + NUMBER_COLUMNS + ["pre_eval_cp"])
+
+TARGET_COLUMNS = ["y"]
+# this is context we get from the PGN and the Stockfish analysis, but is not used as a predictor for the model, ive kept it as it helps to understand the data
 METADATA_COLUMNS = [
-    "game_id", "ply", "fen", "white_elo", "black_elo", "player_to_move", "time_control",
-    "utc_date", "utc_time", "source_pgn", "played_move", "engine_best_move",
-    "before_eval_depth", "played_eval_depth", "before_eval_nodes", "played_eval_nodes",
-    "best_eval_status", "played_eval_status"]
-TARGET_COLUMNS = []
-for function in EVALUATION_FEATURE_FUNCTIONS:
-    if function.__name__ != "pre_eval_cp":  # The pre-move score is already a predictor column.
-        TARGET_COLUMNS.append(function.__name__)
-CSV_COLUMNS = METADATA_COLUMNS + PREDICTOR_COLUMNS + TARGET_COLUMNS
+    "game_id", "ply", "fen", "white_elo", "black_elo",
+    "player_to_move", "time_control", "utc_date", "utc_time",
+    "source_pgn", "played_move", "engine_best_move",
+    "before_eval_depth", "played_eval_depth",
+    "before_eval_nodes", "played_eval_nodes",
+    "best_eval_status", "played_eval_status",
+    "played_eval_cp", "pre_mate", "played_mate",
+    "eval_loss_cp", "label_status", "pgn_error"
+]
 
-
-# Collect the ordinary pre-move features. Stockfish values are added in the main loop.
-def get_position_row(headers, board, ply, clocks, last_spent):
-    player = board.turn
-    row = {"game_id": headers.get("Site", "").rstrip("/").split("/")[-1],
-           "ply": ply, "fen": board.fen(), "white_elo": headers.get("WhiteElo"),
-           "black_elo": headers.get("BlackElo"),
-           "player_to_move": "white" if player == chess.WHITE else "black",
-           "time_control": headers.get("TimeControl"),
-           "utc_date": headers.get("UTCDate"), "utc_time": headers.get("UTCTime")}
-    row.update(get_all_features(headers, board, clocks, last_spent))
-    return row
+CSV_COLUMNS = TARGET_COLUMNS + PREDICTOR_COLUMNS + [" "] + METADATA_COLUMNS
 
 
 def process_pgn(pgn_path, csv_path, engine):
@@ -679,64 +628,110 @@ def process_pgn(pgn_path, csv_path, engine):
         writer = csv.DictWriter(target, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         games = 0
+
         while True:
             game = chess.pgn.read_game(source)
             if game is None:
                 break
+
+            # Record broken games and continue with the next game.
             if game.errors:
-                raise ValueError(f"Cannot reconstruct a game in {pgn_path.name}: {game.errors}")
+                writer.writerow({
+                    "game_id": game.headers.get("Site", "").rstrip("/").split("/")[-1],
+                    "source_pgn": pgn_path.name,
+                    "label_status": "pgn_error",
+                    "pgn_error": str(game.errors[0])
+                })
+                continue
+
             games += 1
             print(f"{pgn_path.name}: game {games}", flush=True)
+
+            # Metadata that stays the same throughout the game.
+            game_metadata = {
+                "game_id": game.headers.get("Site", "").rstrip("/").split("/")[-1],
+                "white_elo": game.headers.get("WhiteElo"),
+                "black_elo": game.headers.get("BlackElo"),
+                "time_control": game.headers.get("TimeControl"),
+                "utc_date": game.headers.get("UTCDate"),
+                "utc_time": game.headers.get("UTCTime"),
+                "source_pgn": pgn_path.name
+            }
+
             board = game.board()
             clocks = {chess.WHITE: None, chess.BLACK: None}
             last_spent = {chess.WHITE: None, chess.BLACK: None}
+
             for ply, node in enumerate(game.mainline(), start=1):
                 player = board.turn
-                row = get_position_row(game.headers, board, ply, clocks, last_spent)
 
-                # Search the best continuation, then force the human's actual move.
+                # Copy game metadata and calculate pre-move predictors.
+                row = game_metadata.copy()
+                row.update(get_all_features(game.headers, board, clocks, last_spent))
+
+                # Metadata that changes with each move.
+                row["ply"] = ply
+                row["fen"] = board.fen()
+                row["player_to_move"] = "white" if player == chess.WHITE else "black"
+                row["played_move"] = node.move.uci()
+
+                # Evaluate the best move and the player's actual move.
                 best_eval = analyse_position(engine, board)
-                played_eval = analyse_position(engine, board, root_moves=[node.move])
 
-                # Extract each centipawn score once, using the same player's perspective.
+                if best_eval is not None and node.move == best_eval["pv"][0]:
+                    played_eval = best_eval
+                else:
+                    played_eval = analyse_position(engine, board, root_moves=[node.move])
+
+                # Extract centipawn evaluations and mate information.
                 best_cp = pre_move_cp(best_eval, player)
                 played_cp = pre_move_cp(played_eval, player)
                 best_mate, best_status = check_for_mate(best_eval, player)
                 played_mate, played_status = check_for_mate(played_eval, player)
 
+                # Calculate the target and save evaluation information.
                 evaluation_values = move_target(best_cp, played_cp, best_status, played_status)
                 evaluation_values["pre_eval_cp"] = best_cp
                 evaluation_values["played_eval_cp"] = played_cp
                 evaluation_values["pre_mate"] = best_mate
                 evaluation_values["played_mate"] = played_mate
-                row.update(get_evaluation_features(evaluation_values))
+                row.update(evaluation_values)
 
-                row["played_move"] = node.move.uci()
-                row["engine_best_move"] = best_eval["pv"][0].uci() if best_eval is not None else None
-                row["before_eval_depth"] = best_eval.get("depth") if best_eval is not None else None
-                row["played_eval_depth"] = played_eval.get("depth") if played_eval is not None else None
-                row["before_eval_nodes"] = best_eval.get("nodes") if best_eval is not None else None
-                row["played_eval_nodes"] = played_eval.get("nodes") if played_eval is not None else None
-                row["best_eval_status"] = best_status
-                row["played_eval_status"] = played_status
-                row["source_pgn"] = pgn_path.name
+                # Stockfish metadata for this move.
+                stockfish_metadata = {
+                    "engine_best_move": best_eval["pv"][0].uci() if best_eval is not None else None,
+                    "before_eval_depth": best_eval.get("depth") if best_eval is not None else None,
+                    "played_eval_depth": played_eval.get("depth") if played_eval is not None else None,
+                    "before_eval_nodes": best_eval.get("nodes") if best_eval is not None else None,
+                    "played_eval_nodes": played_eval.get("nodes") if played_eval is not None else None,
+                    "best_eval_status": best_status,
+                    "played_eval_status": played_status
+                }
+                row.update(stockfish_metadata)
+
+                # Save the completed row.
                 writer.writerow(row)
 
-                # Only now advance the board and read the current after-move clock.
+                # Advance the board and update clock information.
                 board.push(node.move)
                 current = node.clock()
                 previous = clocks[player]
+
                 last_spent[player] = None
                 if previous is not None and current is not None:
                     last_spent[player] = previous - current
+
                 clocks[player] = current
+
                 if ply % 50 == 0:
                     target.flush()
                     print(f"  ply {ply}", flush=True)
+
             target.flush()
+
     print(f"Finished {csv_path.name}", flush=True)
 
-
+# context for buncha bull that chatgpt made sense for recordkeeping
 def run():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=False)
     with chess.engine.SimpleEngine.popen_uci(str(STOCKFISH_PATH)) as engine:
