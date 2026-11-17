@@ -1,16 +1,22 @@
-StockfishComplexity.py now uses YOUR LOCAL STOCKFISH, not saved PGN evaluations.
+Complexity.py processes ALL games and ALL played moves with local Stockfish.
+No sampling, cleaning or train/validation/test splitting happens here.
 
-Run it with VS Code's Run Python File button, or from the project folder:
-.venv/bin/python "Python Scripts/StockfishComplexity.py"
+Run from the project folder:
+.venv/bin/python "Python Scripts/Complexity.py"
 
-Defaults: 10 random games per file, 2 positions per game (about 60 rows).
-Search: Stockfish 19, 100,000 nodes/search, 1 thread, 128 MiB, MultiPV 1.
-Edit STOCKFISH_PATH and the sampling/search settings at the top of the script.
-For about 6,000 rows, set GAMES_PER_FILE = 1000 after checking a small run.
+Settings are at the top. OUTPUT_DIR must name a NEW folder.
+Defaults: data/position_dataset, 100,000 nodes/search, 1 thread, 128 MiB, MultiPV 1.
+Output: games_1m.csv, games_5m.csv, games_10m.csv and engine_protocol.json.
 
-A fresh data/stockfish_positions_TIMESTAMP/ folder is created every run.
-For initial classification, filter label_status == "finite_cp".
-Use predictor_columns.txt for X; keep chosen-move and label columns out of X.
-No Wi-Fi needed; your computer must stay on and awake.
+Stockfish starts once. Each move gets a free search and an actual-move-only search.
+best_cp and played_cp are extracted once; move_target uses the extracted values.
+There are 60 predictors, including pre_eval_cp, and 84 total CSV columns.
+Actual/best moves, depth, nodes, mate information and statuses are kept for checks.
+Use PREDICTOR_COLUMNS for X; played-move information and labels stay out of X.
 
-The root README.md explains the engine protocol, labels, clocks and all 60 features.
+Ordinary loss >200cp gives y=1; exactly 200cp gives y=0.
+Missed winning mates and newly allowed losing mates also give y=1.
+Mate-distance changes alone are ignored. Missing/bounded or inconsistent mate
+results remain unclassified. Blank labels are not zero.
+Clock features use earlier annotations only. Suspicious values remain for cleaning.
+The full README.md explains the workflow, features and labeling rules.
